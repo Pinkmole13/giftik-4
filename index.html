@@ -1,18 +1,18 @@
-Вот готовый HTML, который исправляет зависание на iPhone: инициализация переносится на `window.onload`, рендер-цикл аккуратно останавливается при уходе со страницы, контекст создаётся с `desynchronized` (меньше блокировок на iOS), ввод переведён на единые pointer‑события без дублирования, resize/scale безопасны даже при нулевых размерах окна. Просто замените свой файл целиком на этот.
-
-```html
 <!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <title>Пиксельная охота за подарком</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
       overflow: hidden;
@@ -21,6 +21,7 @@
       user-select: none;
       font-family: 'Press Start 2P', monospace;
     }
+
     canvas {
       display: block;
       width: 100vw;
@@ -28,6 +29,7 @@
       image-rendering: pixelated;
       image-rendering: crisp-edges;
     }
+
     .win-overlay {
       position: fixed;
       inset: 0;
@@ -37,30 +39,30 @@
       flex-direction: column;
       gap: 16px;
       background: rgba(0,0,0,0.2);
-      pointer-events: auto;
       text-align: center;
     }
+
     .win-overlay img {
       width: min(90vw, 1960px);
       max-height: 70vh;
-      height: auto;
       border-radius: 8px;
       box-shadow: 0 12px 32px rgba(0,0,0,0.4);
       animation: sway 3.5s ease-in-out infinite;
-      image-rendering: auto;
     }
+
     @keyframes sway {
       0% { transform: translateY(-4px) rotate(-0.4deg); }
       50% { transform: translateY(6px) rotate(0.4deg); }
       100% { transform: translateY(-4px) rotate(-0.4deg); }
     }
-    .win-overlay .title {
+
+    .title {
       font-size: 14px;
       color: #f7e9a3;
       text-shadow: 0 2px 0 #503c00;
     }
-    .win-overlay button {
-      pointer-events: auto;
+
+    button {
       border: 2px solid #fff;
       background: #222;
       color: #fff;
@@ -68,313 +70,210 @@
       border-radius: 6px;
       font-family: 'Press Start 2P', monospace;
       font-size: 12px;
-      text-transform: uppercase;
       cursor: pointer;
-      transition: transform 0.1s ease, background 0.2s ease;
     }
-    .win-overlay button:active {
+
+    button:active {
       transform: translateY(2px);
       background: #333;
     }
   </style>
 </head>
+
 <body>
-  <canvas id="game"></canvas>
-  <div class="win-overlay" id="win">
-    <img src="https://i.imgur.com/LsbkzB0.jpeg" alt="Поздравление" width="1960" height="1360">
-    <div class="title">Поздравляем!</div>
-    <button id="restart">Пройти заново</button>
-  </div>
+<canvas id="game"></canvas>
 
-  <script>
-    window.onload = () => {
-      const canvas = document.getElementById('game');
-      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
-      if (!ctx) return;
+<div class="win-overlay" id="win">
+  <img src="https://i.imgur.com/LsbkzB0.jpeg" alt="Поздравление">
+  <div class="title">Поздравляем!</div>
+  <button id="restart">Пройти заново</button>
+</div>
 
-      const winOverlay = document.getElementById('win');
-      const restartBtn = document.getElementById('restart');
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const winOverlay = document.getElementById('win');
+const restartBtn = document.getElementById('restart');
 
-      const snowflakes = [];
-      const confetti = [];
-      const snowColors = ['#fff', '#e6f6ff', '#cce6ff'];
-      const confettiColors = ['#f94144', '#f3722c', '#f9c74f', '#90be6d', '#43aa8b', '#577590', '#f9844a'];
+let width = 0, height = 0;
+let dpr = 1;
+let lastTime = performance.now();
+let gameWon = false;
+let pointerDown = null;
 
-      const player = { x: 0, y: 0, r: 16, vx: 0, vy: 0, speed: 140, moving: false, stepTimer: 0, limbPhase: 0 };
-      const gift = { x: 0, y: 0, r: 18, vx: 0, vy: 0, baseSpeed: 280, speed: 280, lastDecay: 0 };
+const snowflakes = [];
+const confetti = [];
 
-      let lastTime = performance.now();
-      let gameWon = false;
-      let width = 0, height = 0;
-      let pointerDown = null;
-      let dpr = 1;
-      let rafId = null;
+const player = {
+  x: 0, y: 0, r: 16,
+  vx: 0, vy: 0,
+  speed: 140,
+  moving: false,
+  stepTimer: 0,
+  limbPhase: 0
+};
 
-      const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-      const rand = (min, max) => Math.random() * (max - min) + min;
-      const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const gift = {
+  x: 0, y: 0, r: 18,
+  vx: 0, vy: 0,
+  baseSpeed: 280,
+  speed: 280,
+  lastDecay: 0
+};
 
-      function resize() {
-        dpr = Math.min(2, window.devicePixelRatio || 1);
-        width = Math.max(1, Math.floor(window.innerWidth));
-        height = Math.max(1, Math.floor(window.innerHeight));
-        canvas.width = width * dpr;
-        canvas.height = height * dpr;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      }
+function rand(min, max) {
+  return Math.random() * (max - min) + min;
+}
 
-      function resetSnow() {
-        snowflakes.length = 0;
-        const count = Math.min(180, Math.floor(width * height / 5200));
-        for (let i = 0; i < count; i++) {
-          snowflakes.push({
-            x: rand(0, width),
-            y: rand(0, height),
-            r: rand(1.2, 3.2),
-            speed: rand(24, 48),
-            drift: rand(-9, 9),
-            color: snowColors[Math.floor(Math.random() * snowColors.length)]
-          });
-        }
-      }
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  width = window.innerWidth;
+  height = window.innerHeight;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
 
-      function spawnConfetti() {
-        confetti.length = 0;
-        const count = Math.min(180, Math.floor(width * height / 5200));
-        for (let i = 0; i < count; i++) {
-          confetti.push({
-            x: rand(0, width),
-            y: rand(-height, 0),
-            w: rand(6, 14),
-            h: rand(6, 14),
-            speed: rand(70, 130),
-            drift: rand(-36, 36),
-            rot: rand(0, Math.PI * 2),
-            rotSpeed: rand(-1.3, 1.3),
-            color: confettiColors[Math.floor(Math.random() * confettiColors.length)]
-          });
-        }
-      }
+function distance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
 
-      function randomStartPositions() {
-        player.x = rand(width * 0.25, width * 0.75);
-        player.y = rand(height * 0.25, height * 0.75);
-        gift.x = rand(width * 0.2, width * 0.8);
-        gift.y = rand(height * 0.2, height * 0.8);
-        const minDist = Math.min(width, height) * 0.25;
-        if (distance(player, gift) < minDist) {
-          gift.x = clamp(gift.x + minDist, gift.r, width - gift.r);
-          gift.y = clamp(gift.y + minDist, gift.r, height - gift.r);
-        }
-        gift.speed = gift.baseSpeed;
-        gift.lastDecay = performance.now();
-        const angle = rand(0, Math.PI * 2);
-        gift.vx = Math.cos(angle) * gift.speed;
-        gift.vy = Math.sin(angle) * gift.speed;
-        player.vx = player.vy = 0;
-        player.moving = false;
-      }
+function resetSnow() {
+  snowflakes.length = 0;
+  const count = Math.min(200, width * height / 4000);
+  for (let i = 0; i < count; i++) {
+    snowflakes.push({
+      x: rand(0, width),
+      y: rand(0, height),
+      r: rand(1.5, 3.5),
+      speed: rand(25, 55)
+    });
+  }
+}
 
-      function handleSwipe(start, end) {
-        const dx = end.x - start.x;
-        const dy = end.y - start.y;
-        const len = Math.hypot(dx, dy);
-        if (len < 18) return;
-        const nx = dx / len;
-        const ny = dy / len;
-        player.vx = nx * player.speed;
-        player.vy = ny * player.speed;
-        player.moving = true;
-      }
+function randomStartPositions() {
+  player.x = rand(width * 0.25, width * 0.75);
+  player.y = rand(height * 0.25, height * 0.75);
 
-      function update(dt) {
-        if (gameWon) return updateConfetti(dt);
+  gift.x = rand(width * 0.2, width * 0.8);
+  gift.y = rand(height * 0.2, height * 0.8);
 
-        for (const s of snowflakes) {
-          s.y += s.speed * dt;
-          s.x += s.drift * dt * 0.4;
-          if (s.y > height) { s.y = -5; s.x = rand(0, width); }
-          if (s.x < -5) s.x = width + 5;
-          if (s.x > width + 5) s.x = -5;
-        }
+  gift.speed = gift.baseSpeed;
+  gift.lastDecay = performance.now();
 
-        player.x += player.vx * dt;
-        player.y += player.vy * dt;
-        player.vx *= 0.985;
-        player.vy *= 0.985;
-        if (Math.hypot(player.vx, player.vy) < 5) {
-          player.vx = player.vy = 0;
-          player.moving = false;
-        }
-        player.x = clamp(player.x, player.r, width - player.r);
-        player.y = clamp(player.y, player.r, height - player.r);
+  const angle = rand(0, Math.PI * 2);
+  gift.vx = Math.cos(angle) * gift.speed;
+  gift.vy = Math.sin(angle) * gift.speed;
 
-        const dist = distance(player, gift);
-        const now = performance.now();
-        if (dist < Math.min(width, height) * 0.22) {
-          const dx = gift.x - player.x;
-          const dy = gift.y - player.y;
-          const len = Math.hypot(dx, dy) || 1;
-          gift.vx = (dx / len) * gift.speed;
-          gift.vy = (dy / len) * gift.speed;
-        }
-        if (now - gift.lastDecay > 2000) {
-          gift.speed *= 0.9;
-          gift.lastDecay = now;
-        }
-        gift.x += gift.vx * dt;
-        gift.y += gift.vy * dt;
-        if (gift.x < gift.r) { gift.x = gift.r; gift.vx = Math.abs(gift.vx); }
-        if (gift.x > width - gift.r) { gift.x = width - gift.r; gift.vx = -Math.abs(gift.vx); }
-        if (gift.y < gift.r) { gift.y = gift.r; gift.vy = Math.abs(gift.vy); }
-        if (gift.y > height - gift.r) { gift.y = height - gift.r; gift.vy = -Math.abs(gift.vy); }
+  player.vx = player.vy = 0;
+}
 
-        player.stepTimer += dt;
-        if (player.stepTimer > 0.18) {
-          player.limbPhase = (player.limbPhase + 1) % 2;
-          player.stepTimer = 0;
-        }
-        if (dist < player.r + gift.r - 4) triggerWin();
-      }
+function update(dt) {
+  if (gameWon) return;
 
-      function updateConfetti(dt) {
-        for (const c of confetti) {
-          c.y += c.speed * dt;
-          c.x += c.drift * dt * 0.4;
-          c.rot += c.rotSpeed * dt;
-          if (c.y > height + 40) {
-            c.y = -rand(10, height);
-            c.x = rand(0, width);
-          }
-        }
-      }
+  for (const s of snowflakes) {
+    s.y += s.speed * dt;
+    if (s.y > height) s.y = -5;
+  }
 
-      function draw() {
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, width, height);
+  player.x += player.vx * dt;
+  player.y += player.vy * dt;
+  player.vx *= 0.985;
+  player.vy *= 0.985;
 
-        if (gameWon) {
-          for (const c of confetti) {
-            ctx.save();
-            ctx.translate(c.x, c.y);
-            ctx.rotate(c.rot);
-            ctx.fillStyle = c.color;
-            ctx.fillRect(-c.w / 2, -c.h / 2, c.w, c.h);
-            ctx.restore();
-          }
-        } else {
-          for (const s of snowflakes) {
-            ctx.fillStyle = s.color;
-            ctx.fillRect(Math.round(s.x), Math.round(s.y), s.r, s.r);
-          }
-          drawGift();
-          drawPlayer();
-        }
-      }
+  const dist = distance(player, gift);
 
-      function drawPlayer() {
-        const { x, y, r } = player;
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.fillStyle = '#ffe08a';
-        ctx.fillRect(-r * 0.6, -r * 0.2, r * 1.2, r * 1.2);
-        ctx.fillStyle = '#ffcc4d';
-        ctx.fillRect(-r * 0.25, -r * 0.75, r * 0.5, r * 0.4);
-        ctx.fillStyle = '#f7d46a';
-        ctx.fillRect(-r * 0.55, -r * 0.6, r * 1.1, r * 0.7);
-        const swing = player.moving ? (player.limbPhase ? 4 : -4) : 0;
-        ctx.fillStyle = '#ffd066';
-        ctx.fillRect(-r * 0.9, -r * 0.05 + swing, r * 0.4, r * 0.9);
-        ctx.fillRect(r * 0.5, -r * 0.05 - swing, r * 0.4, r * 0.9);
-        ctx.fillStyle = '#ffb347';
-        ctx.fillRect(-r * 0.4, r * 0.9 + swing, r * 0.5, r * 0.8);
-        ctx.fillRect(r * -0.05, r * 0.9 - swing, r * 0.5, r * 0.8);
-        ctx.restore();
-      }
+  if (dist < Math.min(width, height) * 0.22) {
+    const dx = gift.x - player.x;
+    const dy = gift.y - player.y;
+    const len = Math.hypot(dx, dy) || 1;
+    gift.vx = dx / len * gift.speed;
+    gift.vy = dy / len * gift.speed;
+  }
 
-      function drawGift() {
-        const { x, y, r } = gift;
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.fillStyle = '#c0392b';
-        ctx.fillRect(-r, -r, r * 2, r * 2);
-        ctx.fillStyle = '#e74c3c';
-        ctx.fillRect(-r * 0.2, -r, r * 0.4, r * 2);
-        ctx.fillRect(-r, -r * 0.2, r * 2, r * 0.4);
-        ctx.fillStyle = '#f7d46a';
-        ctx.fillRect(-r * 0.5, -r * 1.1, r, r * 0.3);
-        ctx.fillStyle = '#f1c40f';
-        ctx.fillRect(-r * 0.3, -r * 1.25, r * 0.6, r * 0.6);
-        const running = distance(player, gift) < Math.min(width, height) * 0.22;
-        const step = running ? (player.limbPhase ? 5 : -5) : 0;
-        ctx.fillStyle = '#7f8c8d';
-        ctx.fillRect(-r * 0.6, r + step, r * 0.4, r * 0.9);
-        ctx.fillRect(r * 0.2, r - step, r * 0.4, r * 0.9);
-        ctx.restore();
-      }
+  gift.x += gift.vx * dt;
+  gift.y += gift.vy * dt;
 
-      function triggerWin() {
-        gameWon = true;
-        player.vx = player.vy = 0;
-        gift.vx = gift.vy = 0;
-        spawnConfetti();
-        winOverlay.style.display = 'flex';
-      }
+  const distAfterMove = distance(player, gift);
+  if (distAfterMove < player.r + gift.r - 4) {
+    triggerWin();
+  }
+}
 
-      function resetGame() {
-        gameWon = false;
-        winOverlay.style.display = 'none';
-        resetSnow();
-        randomStartPositions();
-      }
+function draw() {
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, width, height);
 
-      function loop(now) {
-        const dt = Math.min((now - lastTime) / 1000, 0.033);
-        lastTime = now;
-        update(dt);
-        draw();
-        rafId = requestAnimationFrame(loop);
-      }
+  for (const s of snowflakes) {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(s.x, s.y, s.r, s.r);
+  }
 
-      function startPointer(x, y) { pointerDown = { x, y }; }
-      function endPointer(x, y) {
-        if (!pointerDown) return;
-        handleSwipe(pointerDown, { x, y });
-        pointerDown = null;
-      }
+  drawGift();
+  drawPlayer();
+}
 
-      function setupInput() {
-        const start = e => startPointer(e.clientX, e.clientY);
-        const end = e => endPointer(e.clientX, e.clientY);
-        canvas.addEventListener('pointerdown', start, { passive: true });
-        window.addEventListener('pointerup', end, { passive: true });
-        window.addEventListener('pointercancel', () => { pointerDown = null; }, { passive: true });
-        window.addEventListener('pointerleave', () => { pointerDown = null; }, { passive: true });
-        window.addEventListener('blur', () => { pointerDown = null; });
-      }
+function drawPlayer() {
+  ctx.fillStyle = '#ffd966';
+  ctx.fillRect(player.x - 10, player.y - 10, 20, 20);
+}
 
-      restartBtn.addEventListener('click', resetGame);
-      window.addEventListener('resize', () => { resize(); resetSnow(); });
+function drawGift() {
+  ctx.fillStyle = '#e74c3c';
+  ctx.fillRect(gift.x - 12, gift.y - 12, 24, 24);
+}
 
-      document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-          if (rafId) cancelAnimationFrame(rafId);
-          rafId = null;
-        } else if (!rafId) {
-          lastTime = performance.now();
-          rafId = requestAnimationFrame(loop);
-        }
-      });
+function triggerWin() {
+  gameWon = true;
+  winOverlay.style.display = 'flex';
+}
 
-      resize();
-      resetSnow();
-      randomStartPositions();
-      setupInput();
-      rafId = requestAnimationFrame(loop);
-    };
-  </script>
+function loop(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.033);
+  lastTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function startPointer(x, y) {
+  pointerDown = { x, y };
+}
+
+function endPointer(x, y) {
+  if (!pointerDown) return;
+  const dx = x - pointerDown.x;
+  const dy = y - pointerDown.y;
+  const len = Math.hypot(dx, dy);
+  if (len > 20) {
+    player.vx = dx / len * player.speed;
+    player.vy = dy / len * player.speed;
+  }
+  pointerDown = null;
+}
+
+canvas.addEventListener('pointerdown', e => startPointer(e.clientX, e.clientY));
+window.addEventListener('pointerup', e => endPointer(e.clientX, e.clientY));
+
+restartBtn.onclick = () => location.reload();
+
+/* ===== iOS SAFE START ===== */
+function safeStart() {
+  resize();
+
+  if (width === 0 || height === 0) {
+    requestAnimationFrame(safeStart);
+    return;
+  }
+
+  resetSnow();
+  randomStartPositions();
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+safeStart();
+</script>
 </body>
 </html>
-```
